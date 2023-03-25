@@ -39,17 +39,16 @@ def _find_executable(executable, path=None):
     base, ext = os.path.splitext(executable)
 
     if (sys.platform == 'win32') and (ext != '.exe'):
-        executable = executable + '.exe'
+        executable = f'{executable}.exe'
 
-    if not os.path.isfile(executable):
-        for p in paths:
-            f = os.path.join(p, executable)
-            if os.path.isfile(f):
-                # the file exists, we have a shot at spawn working
-                return f
-        return None
-    else:
+    if os.path.isfile(executable):
         return executable
+    for p in paths:
+        f = os.path.join(p, executable)
+        if os.path.isfile(f):
+            # the file exists, we have a shot at spawn working
+            return f
+    return None
 
 
 def _read_output(commandstring, capture_stderr=False):
@@ -63,15 +62,14 @@ def _read_output(commandstring, capture_stderr=False):
         import tempfile
         fp = tempfile.NamedTemporaryFile()
     except ImportError:
-        fp = open("/tmp/_osx_support.%s"%(
-            os.getpid(),), "w+b")
+        fp = open(f"/tmp/_osx_support.{os.getpid()}", "w+b")
 
     with contextlib.closing(fp) as fp:
         if capture_stderr:
             cmd = "%s >'%s' 2>&1" % (commandstring, fp.name)
         else:
             cmd = "%s 2>/dev/null >'%s'" % (commandstring, fp.name)
-        return fp.read().decode('utf-8').strip() if not os.system(cmd) else None
+        return None if os.system(cmd) else fp.read().decode('utf-8').strip()
 
 
 def _find_build_tool(toolname):
@@ -79,11 +77,12 @@ def _find_build_tool(toolname):
     # iOS: xcrun is not installed, some binaries have no PATH: 
     if (sys.platform == 'darwin' and os.uname().machine.startswith('iP')):
         return (_find_executable(toolname) or toolname)
-    
-    return (_find_executable(toolname)
-                or _read_output("/usr/bin/xcrun -find %s" % (toolname,))
-                or ''
-            )
+
+    return (
+        _find_executable(toolname)
+        or _read_output(f"/usr/bin/xcrun -find {toolname}")
+        or ''
+    )
 
 _SYSTEM_VERSION = None
 
@@ -112,8 +111,8 @@ def _get_system_version():
             finally:
                 f.close()
             if m is not None:
-                _SYSTEM_VERSION = '.'.join(m.group(1).split('.')[:2])
-            # else: fall back to the default behaviour
+                _SYSTEM_VERSION = '.'.join(m[1].split('.')[:2])
+                    # else: fall back to the default behaviour
 
     return _SYSTEM_VERSION
 
@@ -127,8 +126,7 @@ def _get_system_version_tuple():
     """
     global _SYSTEM_VERSION_TUPLE
     if _SYSTEM_VERSION_TUPLE is None:
-        osx_version = _get_system_version()
-        if osx_version:
+        if osx_version := _get_system_version():
             try:
                 _SYSTEM_VERSION_TUPLE = tuple(int(i) for i in osx_version.split('.'))
             except ValueError:
@@ -160,9 +158,9 @@ def _default_sysroot(cc):
 
     if _cache_default_sysroot is not None:
         return _cache_default_sysroot
-   
-    contents = _read_output('%s -c -E -v - </dev/null' % (cc,), True)
-    in_incdirs = False   
+
+    contents = _read_output(f'{cc} -c -E -v - </dev/null', True)
+    in_incdirs = False
     for line in contents.splitlines():
         if line.startswith("#include <...>"):
             in_incdirs = True
@@ -187,7 +185,7 @@ def _supports_universal_builds():
     # is in support of allowing 10.4 universal builds to run on 10.3.x systems.
 
     osx_version = _get_system_version_tuple()
-    return bool(osx_version >= (10, 4)) if osx_version else False
+    return osx_version >= (10, 4) if osx_version else False
 
 def _supports_arm64_builds():
     """Returns True if arm64 builds are supported on this system"""
@@ -198,8 +196,6 @@ def _supports_arm64_builds():
     # The lines above come from Apple engineers. They forgot: 
     # 3. iPhoneOS / iPadOS (while cross-compiling).
     return True
-    osx_version = _get_system_version_tuple()
-    return osx_version >= (11, 0) if osx_version else False
 
 
 def _find_appropriate_compiler(_config_vars):
@@ -258,7 +254,7 @@ def _find_appropriate_compiler(_config_vars):
         for cv in _COMPILER_CONFIG_VARS:
             if cv in _config_vars and cv not in os.environ:
                 cv_split = _config_vars[cv].split()
-                cv_split[0] = cc if cv != 'CXX' else cc + '++'
+                cv_split[0] = cc if cv != 'CXX' else f'{cc}++'
                 _save_modified_value(_config_vars, cv, ' '.join(cv_split))
 
     return _config_vars
@@ -294,13 +290,11 @@ def _remove_unsupported_archs(_config_vars):
         return _config_vars
 
     if re.search(r'-arch\s+ppc', _config_vars['CFLAGS']) is not None:
-        # NOTE: Cannot use subprocess here because of bootstrap
-        # issues when building Python itself
-        status = os.system(
+        if status := os.system(
             """echo 'int main{};' | """
             """'%s' -c -arch ppc -x c -o /dev/null /dev/null 2>/dev/null"""
-            %(_config_vars['CC'].replace("'", "'\"'\"'"),))
-        if status:
+            % (_config_vars['CC'].replace("'", "'\"'\"'"),)
+        ):
             # The compile failed for some reason.  Because of differences
             # across Xcode and compiler versions, there is no reliable way
             # to be sure why it failed.  Assume here it was due to lack of
@@ -329,7 +323,7 @@ def _override_all_archs(_config_vars):
             if cv in _config_vars and '-arch' in _config_vars[cv]:
                 flags = _config_vars[cv]
                 flags = re.sub(r'-arch\s+\w+\s', ' ', flags)
-                flags = flags + ' ' + arch
+                flags = f'{flags} {arch}'
                 _save_modified_value(_config_vars, cv, flags)
 
     return _config_vars
@@ -350,7 +344,7 @@ def _check_for_unavailable_sdk(_config_vars):
     cflags = _config_vars.get('CFLAGS', '')
     m = re.search(r'-isysroot\s*(\S+)', cflags)
     if m is not None:
-        sdk = m.group(1)
+        sdk = m[1]
         if not os.path.exists(sdk):
             for cv in _UNIVERSAL_CONFIG_VARS:
                 # Do not alter a config var explicitly overridden by env var
@@ -401,7 +395,7 @@ def compiler_fixup(compiler_so, cc_args):
     if 'ARCHFLAGS' in os.environ and not stripArch:
         # User specified different -arch flags in the environ,
         # see also distutils.sysconfig
-        compiler_so = compiler_so + os.environ['ARCHFLAGS'].split()
+        compiler_so += os.environ['ARCHFLAGS'].split()
 
     if stripSysroot:
         while True:
@@ -429,11 +423,9 @@ def compiler_fixup(compiler_so, cc_args):
     for idx in indices:
         if argvar[idx] == '-isysroot':
             sysroot = argvar[idx+1]
-            break
         else:
             sysroot = argvar[idx][len('-isysroot'):]
-            break
-
+        break
     if sysroot and not os.path.isdir(sysroot):
         from distutils import log
         log.warn("Compiling with an SDK that doesn't seem to exist: %s",
@@ -516,9 +508,7 @@ def get_platform_osx(_config_vars, osname, release, machine):
 
     macver = _config_vars.get('MACOSX_DEPLOYMENT_TARGET', '')
     macrelease = _get_system_version() or macver
-    macver = macver or macrelease
-
-    if macver:
+    if macver := macver or macrelease:
         release = macver
         osname = "macosx"
 
@@ -526,11 +516,10 @@ def get_platform_osx(_config_vars, osname, release, machine):
         # return the same machine type for the platform string.
         # Otherwise, distutils may consider this a cross-compiling
         # case and disallow installs.
-        cflags = _config_vars.get(_INITPRE+'CFLAGS',
-                                    _config_vars.get('CFLAGS', ''))
+        cflags = _config_vars.get(f'{_INITPRE}CFLAGS', _config_vars.get('CFLAGS', ''))
         if macrelease:
             try:
-                macrelease = tuple(int(i) for i in macrelease.split('.')[0:2])
+                macrelease = tuple(int(i) for i in macrelease.split('.')[:2])
             except ValueError:
                 macrelease = (10, 0)
         else:
@@ -574,9 +563,5 @@ def get_platform_osx(_config_vars, osname, release, machine):
         elif machine in ('PowerPC', 'Power_Macintosh'):
             # Pick a sane name for the PPC architecture.
             # See 'i386' case
-            if sys.maxsize >= 2**32:
-                machine = 'ppc64'
-            else:
-                machine = 'ppc'
-
+            machine = 'ppc64' if sys.maxsize >= 2**32 else 'ppc'
     return (osname, release, machine)

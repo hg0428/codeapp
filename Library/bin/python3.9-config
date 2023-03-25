@@ -13,8 +13,13 @@ valid_opts = ['prefix', 'exec-prefix', 'includes', 'libs', 'cflags',
               'embed']
 
 def exit_with_usage(code=1):
-    print("Usage: {0} [{1}]".format(
-        sys.argv[0], '|'.join('--'+opt for opt in valid_opts)), file=sys.stderr)
+    print(
+        "Usage: {0} [{1}]".format(
+            sys.argv[0], '|'.join(f'--{opt}' for opt in valid_opts)
+        ),
+        file=sys.stderr,
+    )
+
     sys.exit(code)
 
 try:
@@ -50,18 +55,15 @@ for opt in opt_flags:
     elif opt in ('--libs', '--ldflags'):
         libs = []
         if '--embed' in opt_flags:
-            libs.append('-lpython' + pyver + sys.abiflags)
-        else:
-            libpython = getvar('LIBPYTHON')
-            if libpython:
-                libs.append(libpython)
+            libs.append(f'-lpython{pyver}{sys.abiflags}')
+        elif libpython := getvar('LIBPYTHON'):
+            libs.append(libpython)
         libs.extend(getvar('LIBS').split() + getvar('SYSLIBS').split())
 
         # add the prefix/lib/pythonX.Y/config dir, but only if there is no
         # shared library in prefix/lib/.
-        if opt == '--ldflags':
-            if not getvar('Py_ENABLE_SHARED'):
-                libs.insert(0, '-L' + getvar('LIBPL'))
+        if opt == '--ldflags' and not getvar('Py_ENABLE_SHARED'):
+            libs.insert(0, '-L' + getvar('LIBPL'))
         print(' '.join(libs))
 
     elif opt == '--extension-suffix':
